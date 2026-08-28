@@ -1349,3 +1349,16 @@ def test_keep_alive_triggers_at_max_keep_alive_count(max_keep_alive_count):
     for cycle in range(1, max_keep_alive_count):
         assert not sub.has_published_results(), f"unexpected keep-alive on cycle {cycle}"
     assert sub.has_published_results()
+
+
+def test_mangle_endpoint_url_brackets_ipv6():
+    from asyncua.server.internal_server import InternalServer
+
+    isrv = InternalServer()
+    base = "opc.tcp://localhost:4840/freeopcua/server/"
+    ipv6 = isrv._mangle_endpoint_url(base, sockname=("::1", 4840))
+    assert ipv6 == "opc.tcp://[::1]:4840/freeopcua/server/"
+    ipv4 = isrv._mangle_endpoint_url(base, sockname=("127.0.0.1", 4840))
+    assert ipv4 == "opc.tcp://127.0.0.1:4840/freeopcua/server/"
+    already = isrv._mangle_endpoint_url(base, sockname=("[::1]", 4840))
+    assert already == "opc.tcp://[::1]:4840/freeopcua/server/"
