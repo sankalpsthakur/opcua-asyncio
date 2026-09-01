@@ -194,7 +194,7 @@ async def _select_clause_from_childs(
 
 
 async def _event_type_nodes_up_to_base(evtype: "Node") -> list["Node"]:
-    """Walk HasSubtype inverse from evtype to BaseEventType (inclusive)."""
+    """Return EventTypes from BaseEventType to evtype (introducing types first)."""
     nodes: list["Node"] = []
     curr_node = evtype
     while True:
@@ -207,6 +207,7 @@ async def _event_type_nodes_up_to_base(evtype: "Node") -> list["Node"]:
         if len(parents) != 1:
             return []
         curr_node = parents[0]
+    nodes.reverse()
     return nodes
 
 
