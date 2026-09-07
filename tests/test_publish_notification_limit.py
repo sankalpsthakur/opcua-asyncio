@@ -1,11 +1,14 @@
+import asyncio
 from typing import Any
 
 import pytest
 
-from asyncua import ua
+from asyncua import Client, Server, ua
 from asyncua.server.address_space import AddressSpace
 from asyncua.server.subscription_service import SubscriptionService
 from asyncua.server.uaprocessor import PublishRequestData
+
+from .conftest import find_free_port
 
 
 async def _callback(*args: Any) -> None:
@@ -107,3 +110,60 @@ async def test_publish_drains_available_requests(with_requests: bool) -> None:
         assert sub.republish(1).NotificationData[0].MonitoredItems[0].ClientHandle == 0
     assert [len(response.NotificationMessage.NotificationData[0].MonitoredItems) for response in responses] == [2, 2, 1]
     assert [response.MoreNotifications for response in responses] == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_notification_limit_over_tcp() -> None:
+    server = Server()
+    await server.init()
+    endpoint = f"opc.tcp://127.0.0.1:{find_free_port()}"
+    server.set_endpoint(endpoint)
+    nodes = [await server.nodes.objects.add_variable(2, f"Limited{i}", i) for i in range(5)]
+    batches: list[list[int]] = []
+    more: list[bool] = []
+    complete = asyncio.Event()
+
+    async def callback(response: ua.PublishResult) -> None:
+        for notification in response.NotificationMessage.NotificationData:
+            if isinstance(notification, ua.DataChangeNotification):
+                batches.append([item.ClientHandle for item in notification.MonitoredItems])
+                more.append(response.MoreNotifications)
+                if sum(map(len, batches)) == 5:
+                    complete.set()
+
+    async with server:
+        async with Client(endpoint) as client:
+            subscription = await client.uaclient.create_subscription(
+                ua.CreateSubscriptionParameters(
+                    RequestedPublishingInterval=50,
+                    RequestedLifetimeCount=1000,
+                    RequestedMaxKeepAliveCount=20,
+                    MaxNotificationsPerPublish=2,
+                    PublishingEnabled=False,
+                ),
+                callback,
+            )
+            try:
+                items = [
+                    ua.MonitoredItemCreateRequest(
+                        ItemToMonitor=ua.ReadValueId(NodeId=node.nodeid, AttributeId=ua.AttributeIds.Value),
+                        MonitoringMode=ua.MonitoringMode.Reporting,
+                        RequestedParameters=ua.MonitoringParameters(ClientHandle=i, QueueSize=1),
+                    )
+                    for i, node in enumerate(nodes)
+                ]
+                results = await client.uaclient.create_monitored_items(
+                    ua.CreateMonitoredItemsParameters(SubscriptionId=subscription.SubscriptionId, ItemsToCreate=items)
+                )
+                for result in results:
+                    result.StatusCode.check()
+                await client.uaclient.set_publishing_mode(
+                    ua.SetPublishingModeParameters(
+                        PublishingEnabled=True, SubscriptionIds=[subscription.SubscriptionId]
+                    )
+                )
+                await asyncio.wait_for(complete.wait(), 5)
+                assert batches == [[0, 1], [2, 3], [4]]
+                assert more == [True, True, False]
+            finally:
+                await client.uaclient.delete_subscriptions([subscription.SubscriptionId])
