@@ -410,15 +410,15 @@ class NodeManagementService:
         addref.TargetNodeClass = ua.NodeClass.Unspecified
         self._add_reference_no_check(nodedata, addref)  # FIXME return StatusCode is not evaluated
 
-    def delete_nodes(
+    async def delete_nodes(
         self, deletenodeitems: ua.DeleteNodesParameters, user: User = User(role=UserRole.Admin)
     ) -> list[ua.StatusCode]:
         results: list[ua.StatusCode] = []
         for item in deletenodeitems.NodesToDelete:
-            results.append(self._delete_node(item, user))
+            results.append(await self._delete_node(item, user))
         return results
 
-    def _delete_node(self, item: ua.DeleteNodesItem, user: User) -> ua.StatusCode:
+    async def _delete_node(self, item: ua.DeleteNodesItem, user: User) -> ua.StatusCode:
         if user.role != UserRole.Admin:
             return ua.StatusCode(ua.StatusCodes.BadUserAccessDenied)
 
@@ -432,22 +432,23 @@ class NodeManagementService:
                     if rdesc.NodeId == item.NodeId:
                         self._aspace[elem].references.remove(rdesc)
 
-        self._delete_node_callbacks(self._aspace[item.NodeId])
+        await self._delete_node_callbacks(self._aspace[item.NodeId])
 
         del self._aspace[item.NodeId]
 
         return ua.StatusCode()
 
-    def _delete_node_callbacks(self, nodedata: NodeData) -> None:
+    async def _delete_node_callbacks(self, nodedata: NodeData) -> None:
         if ua.AttributeIds.Value in nodedata.attributes:
             for handle, callback in list(nodedata.attributes[ua.AttributeIds.Value].datachange_callbacks.items()):
                 try:
-                    callback(handle, None, ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown))
-                    self._aspace.delete_datachange_callback(handle)
+                    await callback(handle, None, ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown))
                 except Exception as ex:
                     self.logger.exception(
                         "Error calling delete node callback callback %s, %s, %s", nodedata, ua.AttributeIds.Value, ex
                     )
+                finally:
+                    self._aspace.delete_datachange_callback(handle)
 
     def add_references(
         self, refs: list[ua.AddReferencesItem], user: User = User(role=UserRole.Admin)
