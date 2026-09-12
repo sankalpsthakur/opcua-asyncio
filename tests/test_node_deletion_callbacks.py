@@ -64,3 +64,43 @@ async def test_delete_node_cleans_up_failed_callback_and_notifies_others(opc: Op
         callback.assert_awaited_once_with(handle, None, ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown))
         assert handle not in aspace._handle_to_attribute_map
     assert node.nodeid not in aspace
+
+
+async def test_delete_batch_finishes_mutation_before_callback_yields(opc: Opc) -> None:
+    parent = await opc.opc.nodes.objects.add_object(2, "AtomicDeletionParent")
+    nodes = [await parent.add_variable(2, f"AtomicDeletion{index}", 42) for index in range(2)]
+    aspace = opc.server.iserver.aspace
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    notifications = []
+
+    async def suspended_callback(handle, value, status):
+        notifications.append(handle)
+        entered.set()
+        await release.wait()
+
+    handles = []
+    for node in nodes:
+        status, handle = aspace.add_datachange_callback(node.nodeid, ua.AttributeIds.Value, suspended_callback)
+        status.check()
+        handles.append(handle)
+
+    deletion = asyncio.create_task(opc.opc.delete_nodes(nodes))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        # The first notification is suspended: another task must already see
+        # the complete batch and handle/reference cleanup, not half a request.
+        deleted_ids = {node.nodeid for node in nodes}
+        assert all(nodeid not in aspace for nodeid in deleted_ids)
+        assert all(handle not in aspace._handle_to_attribute_map for handle in handles)
+        assert all(ref.NodeId not in deleted_ids for ref in aspace[parent.nodeid].references)
+        params = ua.DeleteNodesParameters(
+            NodesToDelete=[ua.DeleteNodesItem(NodeId=node.nodeid, DeleteTargetReferences=True) for node in nodes]
+        )
+        results = await asyncio.wait_for(opc.server.iserver.isession.delete_nodes(params), 2)
+        assert results == [ua.StatusCode(ua.StatusCodes.BadNodeIdUnknown)] * len(nodes)
+    finally:
+        release.set()
+        await asyncio.wait_for(deletion, 2)
+        await parent.delete()
+    assert notifications == handles
