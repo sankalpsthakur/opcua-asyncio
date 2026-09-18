@@ -23,7 +23,6 @@ async def test_stop_drains_tasks_created_while_server_closes():
             self.closed = True
 
         async def wait_closed(self):
-            await asyncio.sleep(0)
             assert self.closed
 
             async def close_connection():
