@@ -225,6 +225,10 @@ class BinaryServer:
         for transport in self.iserver.asyncio_transports:
             transport.close()
 
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+
         # stop cleanup process and run it a last time
         if self.cleanup_task is not None:
             self.cleanup_task.cancel()
@@ -234,10 +238,6 @@ class BinaryServer:
                 pass
 
         await self._close_tasks()
-
-        if self._server:
-            asyncio.get_running_loop().call_soon(self._server.close)
-            await self._server.wait_closed()
 
     async def _close_task_loop(self) -> None:
         while True:
